@@ -10,18 +10,19 @@ from google import genai
 from google.genai import types
 
 
-# ---------------------------------------------------------
+# --------------------------------------------------
 # Environment
-# ---------------------------------------------------------
+# --------------------------------------------------
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+FRONTEND_URL = os.getenv("FRONTEND_URL")
 
 
-# ---------------------------------------------------------
-# FastAPI
-# ---------------------------------------------------------
+# --------------------------------------------------
+# FastAPI Application
+# --------------------------------------------------
 
 app = FastAPI(
     title="CodePilot API",
@@ -30,22 +31,32 @@ app = FastAPI(
 )
 
 
-# ---------------------------------------------------------
+# --------------------------------------------------
 # CORS
-# ---------------------------------------------------------
+# --------------------------------------------------
+
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+
+if FRONTEND_URL:
+    allowed_origins.append(FRONTEND_URL.rstrip("/"))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------------------------------------------------------
-# Gemini
-# ---------------------------------------------------------
+# --------------------------------------------------
+# Gemini Client
+# --------------------------------------------------
 
 if GEMINI_API_KEY:
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -53,9 +64,9 @@ else:
     client = None
 
 
-# ---------------------------------------------------------
-# Request / Response Models
-# ---------------------------------------------------------
+# --------------------------------------------------
+# Request Models
+# --------------------------------------------------
 
 class ReviewRequest(BaseModel):
     code: str = Field(
@@ -74,6 +85,10 @@ class ReviewRequest(BaseModel):
     )
 
 
+# --------------------------------------------------
+# Response Models
+# --------------------------------------------------
+
 class Issue(BaseModel):
     severity: str
     category: str
@@ -90,14 +105,17 @@ class ReviewResponse(BaseModel):
     )
 
     summary: str
+
     strengths: list[str]
+
     issues: list[Issue]
+
     recommendations: list[str]
 
 
-# ---------------------------------------------------------
+# --------------------------------------------------
 # Health Check
-# ---------------------------------------------------------
+# --------------------------------------------------
 
 @app.get("/health")
 def health():
@@ -106,9 +124,9 @@ def health():
     }
 
 
-# ---------------------------------------------------------
-# Root
-# ---------------------------------------------------------
+# --------------------------------------------------
+# Root Endpoint
+# --------------------------------------------------
 
 @app.get("/")
 def root():
@@ -117,9 +135,9 @@ def root():
     }
 
 
-# ---------------------------------------------------------
+# --------------------------------------------------
 # AI Code Review
-# ---------------------------------------------------------
+# --------------------------------------------------
 
 @app.post(
     "/api/review",
@@ -127,22 +145,28 @@ def root():
 )
 def review_code(request: ReviewRequest):
 
+    # Check Gemini configuration
     if client is None:
         raise HTTPException(
             status_code=500,
             detail="Gemini API key is not configured."
         )
 
+    # Check code
     if not request.code.strip():
         raise HTTPException(
             status_code=400,
             detail="Code cannot be empty."
         )
 
-    prompt = f"""
-You are CodePilot, an expert software engineer and code reviewer.
+    # --------------------------------------------------
+    # AI Prompt
+    # --------------------------------------------------
 
-Review this {request.language} source code.
+    prompt = f"""
+You are CodePilot, an expert software engineer and professional code reviewer.
+
+Review the following {request.language} source code.
 
 Repository:
 {request.repository_url or "Not provided"}
@@ -154,7 +178,7 @@ SOURCE CODE:
 
 Analyze ONLY the code provided.
 
-Find:
+Look for:
 
 - Bugs
 - Security vulnerabilities
@@ -166,6 +190,8 @@ Find:
 - Bad programming practices
 
 Do not invent issues.
+
+Be precise and practical.
 
 Return ONLY valid JSON.
 
@@ -202,8 +228,13 @@ LOW
 
 Score must be an integer from 0 to 100.
 
-Keep the review concise and practical.
+Keep the review concise, professional, and actionable.
 """
+
+
+    # --------------------------------------------------
+    # Gemini Request
+    # --------------------------------------------------
 
     try:
 
@@ -221,6 +252,11 @@ Keep the review concise and practical.
                 status_code=502,
                 detail="Gemini returned an empty response."
             )
+
+
+        # --------------------------------------------------
+        # Clean Gemini Response
+        # --------------------------------------------------
 
         result_text = response.text.strip()
 
@@ -245,8 +281,16 @@ Keep the review concise and practical.
 
         result_text = result_text.strip()
 
+
+        # --------------------------------------------------
+        # Parse JSON
+        # --------------------------------------------------
+
         try:
-            result = json.loads(result_text)
+
+            result = json.loads(
+                result_text
+            )
 
         except json.JSONDecodeError:
 
@@ -263,13 +307,22 @@ Keep the review concise and practical.
                 )
 
             try:
-                result = json.loads(match.group(0))
+
+                result = json.loads(
+                    match.group(0)
+                )
 
             except json.JSONDecodeError:
+
                 raise HTTPException(
                     status_code=502,
                     detail="Gemini returned invalid JSON."
                 )
+
+
+        # --------------------------------------------------
+        # Validate AI Response
+        # --------------------------------------------------
 
         try:
 
@@ -289,7 +342,13 @@ Keep the review concise and practical.
                 detail="Gemini returned an unexpected response format."
             )
 
+
         return validated_result
+
+
+    # --------------------------------------------------
+    # Error Handling
+    # --------------------------------------------------
 
     except HTTPException:
         raise
